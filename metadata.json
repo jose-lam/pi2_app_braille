@@ -1,0 +1,6 @@
+{
+  "name": "Lector Braille Prototipo ESP32",
+  "description": "Sistema de lectura Braille con backend Express para archivos .txt, mapeo a celdas de 6 puntos, API REST protegida y simulador virtual de hardware ESP32.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
