@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, Settings2, Trash2 } from 'lucide-react';
 import {
   api,
@@ -27,6 +27,7 @@ import {
   Tenant,
   User,
 } from './types';
+import { speakBrailleChar, stopSpeaking } from './utils/brailleSpeech';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -41,7 +42,13 @@ export default function App() {
 
   const [isBusy, setIsBusy] = useState(false);
   const [isSavingText, setIsSavingText] = useState(false);
+  const [isDictating, setIsDictating] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
+  const isDictationTickRunningRef = useRef(false);
 
   // Modales
   const [showNewRoomModal, setShowNewRoomModal] = useState(false);
@@ -50,6 +57,17 @@ export default function App() {
   const [showTeamModal, setShowTeamModal] = useState(false);
 
   const sessionId = getGlobalSessionId();
+
+  const stopDictation = useCallback(() => {
+    setIsDictating(false);
+    stopSpeaking();
+  }, []);
+
+  const speakIfSynced = useCallback((char: string, syncMode: boolean) => {
+    if (syncMode && !isMutedRef.current) {
+      speakBrailleChar(char);
+    }
+  }, []);
 
   const loadRooms = useCallback(async (preferRoomId?: number) => {
     const list = await api.listRooms();
@@ -150,6 +168,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    stopDictation();
     setStoredToken(null);
     setUser(null);
     setTenant(null);
@@ -184,6 +203,7 @@ export default function App() {
       try {
         const updated = await api.controlRoom(roomDetail.id, action);
         setRoomDetail(updated);
+        speakIfSynced(updated.braille_state.char, updated.sync_mode);
       } catch (err: unknown) {
         setErrorBanner(
           err instanceof Error ? err.message : 'Error al controlar lectura.'
@@ -192,8 +212,117 @@ export default function App() {
         setIsBusy(false);
       }
     },
-    [roomDetail]
+    [roomDetail, speakIfSynced]
   );
+
+  const handleToggleMute = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      if (next) {
+        stopSpeaking();
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleDictation = useCallback(async () => {
+    if (!roomDetail) return;
+
+    if (isDictating) {
+      stopDictation();
+      return;
+    }
+
+    if (!roomDetail.sync_mode || roomDetail.current_text.length === 0) {
+      return;
+    }
+
+    const totalLength = roomDetail.braille_state.totalLength;
+    const isAtEnd = roomDetail.braille_state.position >= totalLength - 1;
+
+    if (isAtEnd) {
+      setIsBusy(true);
+      try {
+        const updated = await api.setRoomPosition(roomDetail.id, 0);
+        setRoomDetail(updated);
+        speakIfSynced(updated.braille_state.char, updated.sync_mode);
+        if (updated.braille_state.totalLength > 1) {
+          setIsDictating(true);
+        }
+      } catch (err: unknown) {
+        setErrorBanner(
+          err instanceof Error ? err.message : 'Error al reiniciar dictado.'
+        );
+      } finally {
+        setIsBusy(false);
+      }
+    } else {
+      speakIfSynced(roomDetail.braille_state.char, roomDetail.sync_mode);
+      setIsDictating(true);
+    }
+  }, [roomDetail, isDictating, stopDictation, speakIfSynced]);
+
+  // Detener dictado si se cambia de sección, salón, o se desactiva Modo Sincronizado
+  useEffect(() => {
+    if (
+      !user ||
+      activeSection !== 'workspace' ||
+      !roomDetail ||
+      !roomDetail.sync_mode ||
+      roomDetail.current_text.length === 0
+    ) {
+      setIsDictating(false);
+    }
+  }, [user, activeSection, selectedRoomId, roomDetail?.sync_mode, roomDetail?.current_text]);
+
+  // Limpiar audio si se sale del Modo Sincronizado o al desmontar
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
+  }, []);
+
+  // Temporizador de Dictado automático cada 3000 ms
+  useEffect(() => {
+    if (
+      !isDictating ||
+      !user ||
+      activeSection !== 'workspace' ||
+      !roomDetail ||
+      !roomDetail.sync_mode ||
+      roomDetail.current_text.length === 0
+    ) {
+      return;
+    }
+
+    const activeRoomId = roomDetail.id;
+    const timer = setInterval(async () => {
+      if (isDictationTickRunningRef.current) return;
+      isDictationTickRunningRef.current = true;
+      try {
+        const updated = await api.controlRoom(activeRoomId, 'siguiente');
+        setRoomDetail(updated);
+        speakIfSynced(updated.braille_state.char, updated.sync_mode);
+        if (
+          !updated.braille_state.hasNext ||
+          updated.braille_state.position >= updated.braille_state.totalLength - 1
+        ) {
+          setIsDictating(false);
+        }
+      } catch (err: unknown) {
+        setIsDictating(false);
+        setErrorBanner(
+          err instanceof Error ? err.message : 'Error durante el dictado automático.'
+        );
+      } finally {
+        isDictationTickRunningRef.current = false;
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isDictating, user, activeSection, roomDetail?.id, roomDetail?.sync_mode, roomDetail?.current_text, speakIfSynced]);
 
   // Atajos de teclado en escritorio (Flecha Izq, Flecha Der, Home)
   useEffect(() => {
@@ -255,8 +384,16 @@ export default function App() {
         rooms={rooms}
         selectedRoomId={selectedRoomId}
         activeSection={activeSection}
-        onSelectRoom={(id) => setSelectedRoomId(id)}
-        onChangeSection={setActiveSection}
+        onSelectRoom={(id) => {
+          stopDictation();
+          setSelectedRoomId(id);
+        }}
+        onChangeSection={(sec) => {
+          if (sec !== 'workspace') {
+            stopDictation();
+          }
+          setActiveSection(sec);
+        }}
         onOpenNewRoom={() => setShowNewRoomModal(true)}
         onOpenTeamModal={() => setShowTeamModal(true)}
         onLogout={handleLogout}
@@ -378,6 +515,7 @@ export default function App() {
                     globalPosition={roomDetail.braille_state.position}
                     isSaving={isSavingText}
                     onBroadcastText={async (text, fname, initPos) => {
+                      stopDictation();
                       setIsSavingText(true);
                       try {
                         const updated = await api.updateRoomText(roomDetail.id, {
@@ -391,6 +529,7 @@ export default function App() {
                       }
                     }}
                     onUploadFile={async (file, initPos) => {
+                      stopDictation();
                       setIsSavingText(true);
                       try {
                         const updated = await api.uploadRoomTxtFile(
@@ -409,7 +548,9 @@ export default function App() {
                         pos
                       );
                       setRoomDetail(updated);
+                      speakIfSynced(updated.braille_state.char, updated.sync_mode);
                     }}
+                    onTextEditActivity={stopDictation}
                   />
                 </div>
               </div>
@@ -444,8 +585,15 @@ export default function App() {
             room={roomDetail}
             isThisComputerLinked={isThisComputerLinked}
             isBusy={isBusy}
+            isDictating={isDictating}
+            isMuted={isMuted}
             onControl={handleControl}
+            onToggleDictation={handleToggleDictation}
+            onToggleMute={handleToggleMute}
             onToggleSyncMode={async (nextSync) => {
+              if (!nextSync) {
+                stopDictation();
+              }
               const updated = await api.updateRoom(roomDetail.id, {
                 sync_mode: nextSync,
               });

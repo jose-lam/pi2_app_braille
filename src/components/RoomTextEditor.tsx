@@ -10,6 +10,7 @@ interface RoomTextEditorProps {
   onBroadcastText: (text: string, filename: string, initialPos: number) => Promise<void>;
   onUploadFile: (file: File, initialPos: number) => Promise<void>;
   onSelectPosition: (pos: number) => Promise<void>;
+  onTextEditActivity?: () => void;
 }
 
 export const RoomTextEditor: React.FC<RoomTextEditorProps> = ({
@@ -21,6 +22,7 @@ export const RoomTextEditor: React.FC<RoomTextEditorProps> = ({
   onBroadcastText,
   onUploadFile,
   onSelectPosition,
+  onTextEditActivity,
 }) => {
   const [draftText, setDraftText] = useState(currentText);
   const [draftFilename, setDraftFilename] = useState(filename);
@@ -45,6 +47,7 @@ export const RoomTextEditor: React.FC<RoomTextEditorProps> = ({
       setFeedback('Selecciona un archivo de texto plano (.txt).');
       return;
     }
+    onTextEditActivity?.();
     const reader = new FileReader();
     reader.onload = (ev) => {
       const content = (ev.target?.result as string) || '';
@@ -74,6 +77,7 @@ export const RoomTextEditor: React.FC<RoomTextEditorProps> = ({
 
   const handlePublish = async () => {
     setFeedback(null);
+    onTextEditActivity?.();
     if (pendingFile) {
       await onUploadFile(pendingFile, draftInitPos);
       setPendingFile(null);
@@ -102,7 +106,12 @@ export const RoomTextEditor: React.FC<RoomTextEditorProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setIsEditingRaw((v) => !v)}
+            onClick={() => {
+              if (!isEditingRaw) {
+                onTextEditActivity?.();
+              }
+              setIsEditingRaw((v) => !v);
+            }}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/[0.06] hover:bg-white/[0.1] text-zinc-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             {isEditingRaw ? 'Vista de Caracteres' : 'Escribir Texto'}

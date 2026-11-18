@@ -1,25 +1,43 @@
 import React from 'react';
-import { Monitor, RotateCcw, SkipBack, SkipForward } from 'lucide-react';
+import {
+  Monitor,
+  Pause,
+  Play,
+  RotateCcw,
+  SkipBack,
+  SkipForward,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { RoomDetail } from '../types';
 
 interface NowBroadcastingBarProps {
   room: RoomDetail;
   isThisComputerLinked: boolean;
   isBusy: boolean;
+  isDictating: boolean;
+  isMuted: boolean;
   onControl: (action: 'inicio' | 'siguiente' | 'anterior') => Promise<void>;
   onToggleSyncMode: (nextSync: boolean) => Promise<void>;
+  onToggleDictation: () => void;
+  onToggleMute: () => void;
 }
 
 export const NowBroadcastingBar: React.FC<NowBroadcastingBarProps> = ({
   room,
   isThisComputerLinked,
   isBusy,
+  isDictating,
+  isMuted,
   onControl,
   onToggleSyncMode,
+  onToggleDictation,
+  onToggleMute,
 }) => {
   const { braille_state, current_text, filename, sync_mode } = room;
   const pos = braille_state.position;
   const total = braille_state.totalLength;
+  const hasText = current_text.length > 0;
 
   // Ventana de contexto del texto alrededor del carácter actual
   const start = Math.max(0, pos - 14);
@@ -30,9 +48,9 @@ export const NowBroadcastingBar: React.FC<NowBroadcastingBarProps> = ({
 
   return (
     <div className="sticky bottom-0 z-30 bg-[#121216]/90 backdrop-blur-xl border-t border-white/[0.08] px-4 sm:px-6 py-3">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto flex flex-col lg:flex-row items-center justify-between gap-4">
         {/* Izquierda: Estado de emisión y documento */}
-        <div className="flex items-center gap-3.5 min-w-0 w-full md:w-auto">
+        <div className="flex items-center gap-3.5 min-w-0 w-full lg:w-auto">
           <div className="w-11 h-11 rounded-xl bg-[#0A0A0C] border border-white/[0.08] flex items-center justify-center shrink-0">
             <span className="text-xl text-amber-400 leading-none">
               {braille_state.unicodeBraille}
@@ -60,7 +78,7 @@ export const NowBroadcastingBar: React.FC<NowBroadcastingBarProps> = ({
         </div>
 
         {/* Centro: Controles tipo Spotify + cinta de caracteres en vivo */}
-        <div className="flex flex-col items-center gap-1.5 w-full md:max-w-md">
+        <div className="flex flex-col items-center gap-1.5 w-full lg:max-w-md">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -100,8 +118,52 @@ export const NowBroadcastingBar: React.FC<NowBroadcastingBarProps> = ({
           </div>
         </div>
 
-        {/* Derecha: Modo Libre vs Sincronizado + Posición */}
-        <div className="flex items-center gap-4 shrink-0">
+        {/* Derecha: Dictado + Audio + Modo Libre/Sincronizado + Posición */}
+        <div className="flex flex-wrap items-center justify-center sm:justify-end gap-3 shrink-0">
+          {sync_mode && hasText && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onToggleDictation}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  isDictating
+                    ? 'bg-amber-400 text-zinc-950 hover:bg-amber-300'
+                    : 'bg-white/[0.08] text-white hover:bg-white/[0.14] border border-white/[0.08]'
+                }`}
+              >
+                {isDictating ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5" />
+                    <span>Detener dictado</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    <span>Dictado</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleMute}
+                aria-label={isMuted ? 'Activar audio' : 'Silenciar audio'}
+                title={isMuted ? 'Activar audio de pronunciación' : 'Silenciar audio'}
+                className={`p-2 rounded-xl border transition-colors cursor-pointer shrink-0 ${
+                  isMuted
+                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20'
+                    : 'bg-[#0A0A0C] border-white/[0.08] text-zinc-200 hover:text-white hover:bg-white/[0.08]'
+                }`}
+              >
+                {isMuted ? (
+                  <VolumeX className="w-4 h-4" />
+                ) : (
+                  <Volume2 className="w-4 h-4 text-emerald-400" />
+                )}
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center p-1 rounded-xl bg-[#0A0A0C] border border-white/[0.06]">
             <button
               type="button"
