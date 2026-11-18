@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '../api/client';
+
 const PHONETIC_MAP_ES: Record<string, string> = {
   // Vocales sin tilde
   a: 'a',
@@ -71,6 +73,21 @@ const PHONETIC_MAP_ES: Record<string, string> = {
   '\t': 'tabulación',
 };
 
+let sharedAudio: HTMLAudioElement | null = null;
+let activeFetchController: AbortController | null = null;
+const audioBlobUrlCache = new Map<string, string>();
+
+function getReusableAudio(): HTMLAudioElement | null {
+  if (typeof window === 'undefined' || typeof Audio === 'undefined') {
+    return null;
+  }
+  if (!sharedAudio) {
+    sharedAudio = new Audio();
+    sharedAudio.preload = 'auto';
+  }
+  return sharedAudio;
+}
+
 export function getSpanishPhoneticName(char: string): string {
   if (!char) return '';
   const lower = char.toLowerCase();
@@ -96,14 +113,7 @@ function selectSpanishVoice(): SpeechSynthesisVoice | null {
   );
 }
 
-export function stopSpeaking(): void {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    return;
-  }
-  window.speechSynthesis.cancel();
-}
-
-export function speakBrailleChar(char: string): void {
+function speakWithBrowserFallback(char: string): void {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     return;
   }
@@ -123,4 +133,87 @@ export function speakBrailleChar(char: string): void {
   }
 
   window.speechSynthesis.speak(utterance);
+}
+
+export function stopSpeaking(): void {
+  if (activeFetchController) {
+    activeFetchController.abort();
+    activeFetchController = null;
+  }
+
+  if (sharedAudio) {
+    sharedAudio.pause();
+    sharedAudio.currentTime = 0;
+  }
+
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+export async function speakBrailleChar(char: string): Promise<void> {
+  if (!char) return;
+
+  stopSpeaking();
+
+  const audio = getReusableAudio();
+  if (!audio) {
+    speakWithBrowserFallback(char);
+    return;
+  }
+
+  const cacheKey = char.toLowerCase();
+  const cachedUrl = audioBlobUrlCache.get(cacheKey);
+  if (cachedUrl) {
+    try {
+      audio.src = cachedUrl;
+      audio.currentTime = 0;
+      await audio.play();
+      return;
+    } catch {
+      audioBlobUrlCache.delete(cacheKey);
+    }
+  }
+
+  const controller = new AbortController();
+  activeFetchController = controller;
+
+  try {
+    const baseUrl = getApiBaseUrl();
+    const res = await fetch(
+      `${baseUrl}/api/braille/tts?char=${encodeURIComponent(char)}`,
+      { signal: controller.signal }
+    );
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    if (controller.signal.aborted) return;
+    if (blob.size === 0) {
+      throw new Error('Audio MP3 vacío');
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    audioBlobUrlCache.set(cacheKey, objectUrl);
+
+    if (controller.signal.aborted) return;
+
+    audio.pause();
+    audio.currentTime = 0;
+    audio.src = objectUrl;
+    await audio.play();
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return;
+    }
+    if (!controller.signal.aborted) {
+      speakWithBrowserFallback(char);
+    }
+  } finally {
+    if (activeFetchController === controller) {
+      activeFetchController = null;
+    }
+  }
 }
