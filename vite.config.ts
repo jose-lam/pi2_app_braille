@@ -12,11 +12,17 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
-      allowedHosts: [
-        'cupcake-coke-sappiness.ngrok-free.dev',
-      ],
+      allowedHosts: true as const,
+      proxy: {
+        '/api': {
+          target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8000',
+          changeOrigin: true,
+        },
+      },
     },
   };
 });

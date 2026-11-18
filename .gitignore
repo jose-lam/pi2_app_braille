@@ -1,8 +1,25 @@
+# Dependencias y compilaciones Frontend
 node_modules/
-build/
 dist/
+build/
 coverage/
-.DS_Store
-*.log
-.env*
+
+# Entornos y artefactos Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Variables de entorno y secretos
+.env
+.env.*
 !.env.example
+!backend/.env.example
+
+# Archivos temporales y del sistema operativo
+.DS_Store
+Thumbs.db
+*.log
+*.swp

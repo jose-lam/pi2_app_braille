@@ -1,335 +1,505 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Header } from './components/Header';
-import { TextViewer } from './components/TextViewer';
-import { Esp32Simulator } from './components/Esp32Simulator';
-import { Esp32CodeGuide } from './components/Esp32CodeGuide';
-import { TokenConfigModal } from './components/TokenConfigModal';
-import { BrailleResponse, FullSystemState, ApiConfig } from './types';
-
-const DEFAULT_TOKEN = 'MI_TOKEN_SECRETO_123';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Monitor, Settings2, Trash2 } from 'lucide-react';
+import {
+  api,
+  getGlobalSessionId,
+  getStoredToken,
+  setStoredToken,
+} from './api/client';
+import { AuthView } from './components/AuthView';
+import { BrailleCellApple } from './components/BrailleCellApple';
+import { DevicesBentoGrid } from './components/DevicesBentoGrid';
+import { FirmwareAndDeployView } from './components/FirmwareAndDeployView';
+import { NowBroadcastingBar } from './components/NowBroadcastingBar';
+import {
+  AddDeviceModal,
+  NewRoomModal,
+  RoomNetworkModal,
+  TeamModal,
+} from './components/RoomModals';
+import { RoomTextEditor } from './components/RoomTextEditor';
+import { SidebarRooms } from './components/SidebarRooms';
+import {
+  AuthResponse,
+  Esp32Device,
+  RoomDetail,
+  RoomSummary,
+  Tenant,
+  User,
+} from './types';
 
 export default function App() {
-  const [token, setToken] = useState<string>(() => {
-    return localStorage.getItem('esp32_token') || DEFAULT_TOKEN;
-  });
-  const [isTokenModalOpen, setIsTokenModalOpen] = useState<boolean>(false);
-  const [serverConfig, setServerConfig] = useState<ApiConfig | null>(null);
-  const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
+  const [user, setUser] = useState<User | null>(null);
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [guestDocsTab, setGuestDocsTab] = useState<'firmware' | 'deploy' | null>(null);
 
-  // Estado del texto y lectura
-  const [currentText, setCurrentText] = useState<string>('HOLA MUNDO ESP32 BRAILLE 123');
-  const [filename, setFilename] = useState<string>('ejemplo_inicial.txt');
-  const [posicionInicial, setPosicionInicial] = useState<number>(0);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+  const [roomDetail, setRoomDetail] = useState<RoomDetail | null>(null);
+  const [activeSection, setActiveSection] = useState<'workspace' | 'firmware' | 'deploy'>('workspace');
 
-  // Estado Braille activo
-  const [brailleState, setBrailleState] = useState<BrailleResponse>({
-    char: 'H',
-    position: 0,
-    braille: [true, true, false, false, true, false],
-    totalLength: 28,
-    posicion_inicial: 0,
-    unicodeBraille: '⠓',
-    hasNext: true,
-    hasPrev: false,
-  });
+  const [isBusy, setIsBusy] = useState(false);
+  const [isSavingText, setIsSavingText] = useState(false);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
-  const [isLoadingUpload, setIsLoadingUpload] = useState<boolean>(false);
-  const [isCallingApi, setIsCallingApi] = useState<boolean>(false);
-  const [lastHttpLatencyMs, setLastHttpLatencyMs] = useState<number>(12);
-  const [lastEndpointCalled, setLastEndpointCalled] = useState<string>('/api/braille/inicio');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Modales
+  const [showNewRoomModal, setShowNewRoomModal] = useState(false);
+  const [showNetworkModal, setShowNetworkModal] = useState(false);
+  const [showAddDeviceModal, setShowAddDeviceModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
 
-  // Guardar token en localStorage cuando cambie
-  const handleSaveToken = (newToken: string) => {
-    setToken(newToken);
-    localStorage.setItem('esp32_token', newToken);
-    setErrorMessage(null);
-  };
+  const sessionId = getGlobalSessionId();
 
-  // Cargar configuración del servidor
-  const fetchConfig = useCallback(async () => {
-    try {
-      const res = await fetch('/api/config');
-      if (res.ok) {
-        const data = await res.json();
-        setServerConfig(data);
-        setIsBackendConnected(true);
-      }
-    } catch {
-      setIsBackendConnected(false);
+  const loadRooms = useCallback(async (preferRoomId?: number) => {
+    const list = await api.listRooms();
+    setRooms(list);
+    if (list.length > 0) {
+      setSelectedRoomId((prev) => {
+        if (preferRoomId && list.some((r) => r.id === preferRoomId)) {
+          return preferRoomId;
+        }
+        if (prev && list.some((r) => r.id === prev)) {
+          return prev;
+        }
+        return list[0].id;
+      });
+    } else {
+      setSelectedRoomId(null);
+      setRoomDetail(null);
     }
   }, []);
 
-  // Cargar estado inicial desde el backend
-  const fetchInitialState = useCallback(async () => {
+  const loadRoomDetail = useCallback(async (roomId: number) => {
     try {
-      const startTime = performance.now();
-      const res = await fetch('/api/braille/estado', {
-        headers: {
-          'X-ESP32-Token': token,
-        },
-      });
-
-      const latency = Math.round(performance.now() - startTime);
-      setLastHttpLatencyMs(latency);
-
-      if (res.ok) {
-        const data: FullSystemState = await res.json();
-        setCurrentText(data.currentText || '');
-        setFilename(data.filename || 'archivo.txt');
-        setPosicionInicial(data.posicion_inicial ?? 0);
-        setBrailleState(data);
-        setIsBackendConnected(true);
-        setErrorMessage(null);
-      } else {
-        const errJson = await res.json().catch(() => ({}));
-        setErrorMessage(errJson.message || `Error HTTP ${res.status}: No autorizado`);
-      }
-    } catch {
-      setIsBackendConnected(false);
-      setErrorMessage('No se pudo conectar con el servidor Express.');
+      const detail = await api.getRoom(roomId);
+      setRoomDetail(detail);
+      setErrorBanner(null);
+    } catch (err: unknown) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'Error al obtener estado del salón.'
+      );
     }
-  }, [token]);
+  }, []);
+
+  // Restaurar sesión JWT existente
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) {
+      setIsBootstrapping(false);
+      return;
+    }
+
+    api
+      .me()
+      .then(async (res) => {
+        setUser(res.user);
+        setTenant(res.tenant);
+        await loadRooms();
+      })
+      .catch(() => {
+        setStoredToken(null);
+      })
+      .finally(() => {
+        setIsBootstrapping(false);
+      });
+  }, [loadRooms]);
+
+  // Cargar detalle cuando cambia el salón seleccionado
+  useEffect(() => {
+    if (user && selectedRoomId !== null) {
+      loadRoomDetail(selectedRoomId);
+    }
+  }, [user, selectedRoomId, loadRoomDetail]);
+
+  // Sondeo en tiempo real (telemetría de ESP32s y posición de lectura)
+  useEffect(() => {
+    if (!user || selectedRoomId === null || activeSection !== 'workspace') {
+      return;
+    }
+    const interval = setInterval(() => {
+      loadRoomDetail(selectedRoomId);
+      api.listRooms().then(setRooms).catch(() => {});
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [user, selectedRoomId, activeSection, loadRoomDetail]);
+
+  // Heartbeat de Computadora Global si esta PC está vinculada al salón activo
+  const isThisComputerLinked = Boolean(
+    roomDetail && roomDetail.global_session_id === sessionId
+  );
 
   useEffect(() => {
-    fetchConfig();
-    fetchInitialState();
-  }, [fetchConfig, fetchInitialState]);
+    if (!user || !roomDetail || !isThisComputerLinked) return;
+    const hb = setInterval(() => {
+      api
+        .heartbeatGlobalComputer(roomDetail.id, {
+          session_id: sessionId,
+          computer_label: navigator.platform || 'Computadora Global',
+        })
+        .catch(() => {});
+    }, 15000);
+    return () => clearInterval(hb);
+  }, [user, roomDetail, isThisComputerLinked, sessionId]);
 
-  // Endpoint: GET /api/braille/inicio
-  const handleGoToStart = async () => {
-    setIsCallingApi(true);
-    setLastEndpointCalled('/api/braille/inicio');
-    const startTime = performance.now();
+  const handleAuthenticated = async (auth: AuthResponse) => {
+    setUser(auth.user);
+    setTenant(auth.tenant);
+    setGuestDocsTab(null);
+    await loadRooms();
+  };
+
+  const handleLogout = () => {
+    setStoredToken(null);
+    setUser(null);
+    setTenant(null);
+    setRooms([]);
+    setSelectedRoomId(null);
+    setRoomDetail(null);
+  };
+
+  const handleLinkGlobalComputer = async () => {
+    if (!roomDetail) return;
+    setIsBusy(true);
     try {
-      const res = await fetch('/api/braille/inicio', {
-        method: 'GET',
-        headers: {
-          'X-ESP32-Token': token,
-        },
+      const updated = await api.linkGlobalComputer(roomDetail.id, {
+        session_id: sessionId,
+        computer_label: `${user?.full_name || 'Operador'} · PC Salón`,
       });
-      const latency = Math.round(performance.now() - startTime);
-      setLastHttpLatencyMs(latency);
+      setRoomDetail(updated);
+      await loadRooms(updated.id);
+    } catch (err: unknown) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'No se pudo vincular esta PC.'
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
 
-      if (res.ok) {
-        const data: BrailleResponse = await res.json();
-        setBrailleState(data);
-        setErrorMessage(null);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setErrorMessage(
-          errData.message || `HTTP ${res.status}: Error al ejecutar /api/braille/inicio`
+  const handleControl = useCallback(
+    async (action: 'inicio' | 'siguiente' | 'anterior') => {
+      if (!roomDetail) return;
+      setIsBusy(true);
+      try {
+        const updated = await api.controlRoom(roomDetail.id, action);
+        setRoomDetail(updated);
+      } catch (err: unknown) {
+        setErrorBanner(
+          err instanceof Error ? err.message : 'Error al controlar lectura.'
         );
+      } finally {
+        setIsBusy(false);
       }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error de conexión');
-    } finally {
-      setIsCallingApi(false);
+    },
+    [roomDetail]
+  );
+
+  // Atajos de teclado en escritorio (Flecha Izq, Flecha Der, Home)
+  useEffect(() => {
+    if (!user || activeSection !== 'workspace' || !roomDetail) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleControl('siguiente');
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handleControl('anterior');
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        handleControl('inicio');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [user, activeSection, roomDetail, handleControl]);
+
+  if (isBootstrapping) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0C] flex items-center justify-center text-sm text-zinc-400">
+        Cargando sesión...
+      </div>
+    );
+  }
+
+  if (!user || !tenant) {
+    if (guestDocsTab) {
+      return (
+        <div className="min-h-screen bg-[#0A0A0C] text-[#F5F5F7] px-6 py-8">
+          <div className="max-w-6xl mx-auto">
+            <FirmwareAndDeployView
+              mode={guestDocsTab}
+              onBack={() => setGuestDocsTab(null)}
+            />
+          </div>
+        </div>
+      );
     }
-  };
 
-  // Endpoint: GET /api/braille/siguiente
-  const handleNextLetter = async () => {
-    setIsCallingApi(true);
-    setLastEndpointCalled('/api/braille/siguiente');
-    const startTime = performance.now();
-    try {
-      const res = await fetch('/api/braille/siguiente', {
-        method: 'GET',
-        headers: {
-          'X-ESP32-Token': token,
-        },
-      });
-      const latency = Math.round(performance.now() - startTime);
-      setLastHttpLatencyMs(latency);
-
-      if (res.ok) {
-        const data: BrailleResponse = await res.json();
-        setBrailleState(data);
-        setErrorMessage(null);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setErrorMessage(
-          errData.message || `HTTP ${res.status}: Error al ejecutar /api/braille/siguiente`
-        );
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error de conexión');
-    } finally {
-      setIsCallingApi(false);
-    }
-  };
-
-  // Endpoint: GET /api/braille/anterior
-  const handlePrevLetter = async () => {
-    setIsCallingApi(true);
-    setLastEndpointCalled('/api/braille/anterior');
-    const startTime = performance.now();
-    try {
-      const res = await fetch('/api/braille/anterior', {
-        method: 'GET',
-        headers: {
-          'X-ESP32-Token': token,
-        },
-      });
-      const latency = Math.round(performance.now() - startTime);
-      setLastHttpLatencyMs(latency);
-
-      if (res.ok) {
-        const data: BrailleResponse = await res.json();
-        setBrailleState(data);
-        setErrorMessage(null);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setErrorMessage(
-          errData.message || `HTTP ${res.status}: Error al ejecutar /api/braille/anterior`
-        );
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error de conexión');
-    } finally {
-      setIsCallingApi(false);
-    }
-  };
-
-  // Endpoint: POST /api/upload
-  const handleSaveAndUpload = async (
-    file: File | null,
-    textContent: string,
-    initialPos: number
-  ) => {
-    setIsLoadingUpload(true);
-    setLastEndpointCalled('/api/upload');
-    const startTime = performance.now();
-
-    try {
-      let res: Response;
-
-      if (file) {
-        // Enviar con FormData y Multer
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('posicion_inicial', String(initialPos));
-
-        res = await fetch('/api/upload', {
-          method: 'POST',
-          headers: {
-            'X-ESP32-Token': token,
-          },
-          body: formData,
-        });
-      } else {
-        // Enviar vía JSON
-        res = await fetch('/api/upload', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-ESP32-Token': token,
-          },
-          body: JSON.stringify({
-            text: textContent,
-            filename: filename || 'documento.txt',
-            posicion_inicial: initialPos,
-          }),
-        });
-      }
-
-      const latency = Math.round(performance.now() - startTime);
-      setLastHttpLatencyMs(latency);
-
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentText(textContent);
-        if (data.filename) setFilename(data.filename);
-        setPosicionInicial(initialPos);
-        setBrailleState({
-          char: data.char,
-          position: data.position,
-          braille: data.braille,
-          totalLength: data.totalLength,
-          posicion_inicial: data.posicion_inicial,
-          unicodeBraille: data.unicodeBraille,
-          hasNext: data.hasNext,
-          hasPrev: data.hasPrev,
-        });
-        setErrorMessage(null);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || `Error del servidor HTTP ${res.status}`);
-      }
-    } catch (error: any) {
-      setErrorMessage(error.message || 'Error al subir archivo');
-      throw error;
-    } finally {
-      setIsLoadingUpload(false);
-    }
-  };
+    return (
+      <AuthView
+        onAuthenticated={handleAuthenticated}
+        onOpenDocs={(tab) => setGuestDocsTab(tab)}
+      />
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col font-sans">
-      {/* Encabezado Principal */}
-      <Header
-        token={token}
-        onOpenTokenConfig={() => setIsTokenModalOpen(true)}
-        isBackendConnected={isBackendConnected}
-        totalLength={brailleState.totalLength ?? currentText.length}
-        currentPos={brailleState.position ?? 0}
-        initialPos={posicionInicial}
+    <div className="min-h-screen bg-[#0A0A0C] text-[#F5F5F7] flex flex-col lg:flex-row">
+      <SidebarRooms
+        tenant={tenant}
+        user={user}
+        rooms={rooms}
+        selectedRoomId={selectedRoomId}
+        activeSection={activeSection}
+        onSelectRoom={(id) => setSelectedRoomId(id)}
+        onChangeSection={setActiveSection}
+        onOpenNewRoom={() => setShowNewRoomModal(true)}
+        onOpenTeamModal={() => setShowTeamModal(true)}
+        onLogout={handleLogout}
       />
 
-      {/* Contenido Principal */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        
-        {/* Grilla Superior: Visor de Texto (Izquierda) + Simulador ESP32 (Derecha) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Panel Izquierdo: Carga y Visor del TXT */}
-          <div className="lg:col-span-6 w-full">
-            <TextViewer
-              currentText={currentText}
-              filename={filename}
-              posicionInicial={posicionInicial}
-              posicionActual={brailleState.position ?? 0}
-              onSetPosicionInicial={setPosicionInicial}
-              onSaveAndUpload={handleSaveAndUpload}
-              isLoading={isLoadingUpload}
-            />
-          </div>
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen">
+        <main className="flex-1 px-6 sm:px-8 py-6 max-w-7xl w-full mx-auto space-y-8">
+          {errorBanner && (
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-4">
+              <span>{errorBanner}</span>
+              <button
+                type="button"
+                onClick={() => setErrorBanner(null)}
+                className="text-rose-200 hover:text-white cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
+          )}
 
-          {/* Panel Derecho: Simulador Físico de ESP32 con Matriz Braille */}
-          <div className="lg:col-span-6 w-full">
-            <Esp32Simulator
-              brailleState={brailleState}
-              onGoToStart={handleGoToStart}
-              onNextLetter={handleNextLetter}
-              onPrevLetter={handlePrevLetter}
-              isCallingApi={isCallingApi}
-              lastHttpLatencyMs={lastHttpLatencyMs}
-              lastEndpointCalled={lastEndpointCalled}
-              errorMessage={errorMessage}
-            />
-          </div>
-        </div>
+          {activeSection === 'firmware' ? (
+            <FirmwareAndDeployView mode="firmware" />
+          ) : activeSection === 'deploy' ? (
+            <FirmwareAndDeployView mode="deploy" />
+          ) : !roomDetail ? (
+            <div className="rounded-2xl bg-[#121216] border border-white/[0.08] p-12 text-center space-y-4">
+              <h1 className="text-xl font-display font-semibold text-white">
+                Bienvenido a {tenant.name}
+              </h1>
+              <p className="text-sm text-zinc-400 max-w-md mx-auto">
+                Crea un salón para vincular tu Computadora Global, cargar textos
+                y generar tokens únicos para tus dispositivos ESP32.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowNewRoomModal(true)}
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold cursor-pointer"
+              >
+                Crear Primer Salón
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Encabezado contextual del Salón */}
+              <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-white/[0.08]">
+                <div className="min-w-0">
+                  <p className="text-xs text-zinc-400">
+                    {tenant.name} / {roomDetail.name}
+                  </p>
+                  <h1 className="text-2xl font-display font-semibold text-white mt-0.5 truncate">
+                    {roomDetail.name}
+                  </h1>
+                  <p className="text-xs text-zinc-400 mt-1 font-mono">
+                    Wi-Fi: {roomDetail.wifi_ssid || 'No definido'} · IP Salón:{' '}
+                    {roomDetail.allowed_public_ip || 'Sin capturar'} · Bloqueo IP:{' '}
+                    {roomDetail.strict_ip_check ? 'Estricto' : 'Desactivado'}
+                  </p>
+                </div>
 
-        {/* Sección Inferior: Código Firmware ESP32, Comandos cURL y Guía */}
-        <div className="w-full">
-          <Esp32CodeGuide token={token} />
-        </div>
-      </main>
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={handleLinkGlobalComputer}
+                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      isThisComputerLinked
+                        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-white text-zinc-950 hover:bg-zinc-200'
+                    }`}
+                  >
+                    <Monitor className="w-3.5 h-3.5" />
+                    <span>
+                      {isThisComputerLinked
+                        ? 'Esta PC es la Computadora Global'
+                        : 'Vincular esta PC como Global'}
+                    </span>
+                  </button>
 
-      {/* Footer sobrio y técnico */}
-      <footer className="border-t border-slate-200 bg-white/70 py-4 text-center text-xs text-slate-500 font-mono">
-        <p>
-          Lector Braille IoT Prototipo • Node.js Express REST API + Vite React • Header X-ESP32-Token: "{token}"
-        </p>
-      </footer>
+                  <button
+                    type="button"
+                    onClick={() => setShowNetworkModal(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-xs font-medium text-zinc-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Red y Wi-Fi</span>
+                  </button>
 
-      {/* Modal de Configuración de Token de Seguridad */}
-      <TokenConfigModal
-        isOpen={isTokenModalOpen}
-        onClose={() => setIsTokenModalOpen(false)}
-        currentToken={token}
-        onSaveToken={handleSaveToken}
-        serverConfig={serverConfig}
+                  {rooms.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await api.deleteRoom(roomDetail.id);
+                        await loadRooms();
+                      }}
+                      title="Eliminar salón"
+                      className="p-2 rounded-xl bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </header>
+
+              {/* Zona Principal: Celda Braille Táctil Apple + Editor de Texto del Salón */}
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
+                <div className="xl:col-span-5 flex flex-col">
+                  <BrailleCellApple
+                    size="lg"
+                    dots={roomDetail.braille_state.braille}
+                    char={roomDetail.braille_state.char}
+                    unicodeBraille={roomDetail.braille_state.unicodeBraille}
+                  />
+                </div>
+                <div className="xl:col-span-7 flex flex-col">
+                  <RoomTextEditor
+                    currentText={roomDetail.current_text}
+                    filename={roomDetail.filename}
+                    initialPosition={roomDetail.initial_position}
+                    globalPosition={roomDetail.braille_state.position}
+                    isSaving={isSavingText}
+                    onBroadcastText={async (text, fname, initPos) => {
+                      setIsSavingText(true);
+                      try {
+                        const updated = await api.updateRoomText(roomDetail.id, {
+                          text,
+                          filename: fname,
+                          initial_position: initPos,
+                        });
+                        setRoomDetail(updated);
+                      } finally {
+                        setIsSavingText(false);
+                      }
+                    }}
+                    onUploadFile={async (file, initPos) => {
+                      setIsSavingText(true);
+                      try {
+                        const updated = await api.uploadRoomTxtFile(
+                          roomDetail.id,
+                          file,
+                          initPos
+                        );
+                        setRoomDetail(updated);
+                      } finally {
+                        setIsSavingText(false);
+                      }
+                    }}
+                    onSelectPosition={async (pos) => {
+                      const updated = await api.setRoomPosition(
+                        roomDetail.id,
+                        pos
+                      );
+                      setRoomDetail(updated);
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Bento Grid de Dispositivos ESP32 */}
+              <DevicesBentoGrid
+                devices={roomDetail.devices}
+                syncMode={roomDetail.sync_mode}
+                onOpenAddDevice={() => setShowAddDeviceModal(true)}
+                onRotateToken={async (deviceId) => {
+                  await api.updateDevice(deviceId, { rotate_token: true });
+                  await loadRoomDetail(roomDetail.id);
+                }}
+                onToggleActive={async (device: Esp32Device) => {
+                  await api.updateDevice(device.id, {
+                    is_active: !device.is_active,
+                  });
+                  await loadRoomDetail(roomDetail.id);
+                }}
+                onDeleteDevice={async (deviceId) => {
+                  await api.deleteDevice(deviceId);
+                  await loadRoomDetail(roomDetail.id);
+                }}
+              />
+            </>
+          )}
+        </main>
+
+        {/* Barra Inferior Estilo Spotify ("Now Broadcasting") */}
+        {activeSection === 'workspace' && roomDetail && (
+          <NowBroadcastingBar
+            room={roomDetail}
+            isThisComputerLinked={isThisComputerLinked}
+            isBusy={isBusy}
+            onControl={handleControl}
+            onToggleSyncMode={async (nextSync) => {
+              const updated = await api.updateRoom(roomDetail.id, {
+                sync_mode: nextSync,
+              });
+              setRoomDetail(updated);
+              await loadRooms(updated.id);
+            }}
+          />
+        )}
+      </div>
+
+      {/* Modales */}
+      <NewRoomModal
+        isOpen={showNewRoomModal}
+        onClose={() => setShowNewRoomModal(false)}
+        onCreate={async (payload) => {
+          const created = await api.createRoom(payload);
+          await loadRooms(created.id);
+          setSelectedRoomId(created.id);
+          setRoomDetail(created);
+          setActiveSection('workspace');
+        }}
+      />
+
+      {roomDetail && (
+        <>
+          <RoomNetworkModal
+            isOpen={showNetworkModal}
+            room={roomDetail}
+            onClose={() => setShowNetworkModal(false)}
+            onSave={async (payload) => {
+              const updated = await api.updateRoom(roomDetail.id, payload);
+              setRoomDetail(updated);
+              await loadRooms(updated.id);
+            }}
+          />
+
+          <AddDeviceModal
+            isOpen={showAddDeviceModal}
+            roomName={roomDetail.name}
+            wifiSsid={roomDetail.wifi_ssid}
+            onClose={() => setShowAddDeviceModal(false)}
+            onRegister={async (name) => {
+              const dev = await api.registerDevice(roomDetail.id, name);
+              await loadRoomDetail(roomDetail.id);
+              await loadRooms(roomDetail.id);
+              return dev;
+            }}
+          />
+        </>
+      )}
+
+      <TeamModal
+        isOpen={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
       />
     </div>
   );
